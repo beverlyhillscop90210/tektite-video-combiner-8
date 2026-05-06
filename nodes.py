@@ -692,10 +692,8 @@ class TektiteVideoCombiner8:
         if isinstance(value, dict):
             comfy_image_path = self._path_from_comfy_image_dict(value)
             if comfy_image_path:
-                paths.append(comfy_image_path)
+                return [comfy_image_path]
             for key in ("fullpath", "path", "filename", "video_url", "url"):
-                if comfy_image_path and key == "filename":
-                    continue
                 candidate = value.get(key)
                 if isinstance(candidate, str) and candidate.strip():
                     paths.append(candidate.strip())
@@ -766,6 +764,8 @@ class TektiteVideoCombiner8:
     def _path_from_comfy_image_dict(self, value: Dict[str, Any]) -> str:
         filename = value.get("filename")
         if not isinstance(filename, str) or not filename.strip():
+            return ""
+        if not self._is_image_file(filename):
             return ""
 
         subfolder = value.get("subfolder", "")
@@ -971,27 +971,25 @@ class TektiteVideoCombiner8:
             f"{len(image_paths)} frames at {float(fps):.2f} fps -> {out_path}"
         )
 
-        frame_duration = 1.0 / max(fps, 1.0)
-        with open(list_path, "w", encoding="utf-8") as f:
-            for p in image_paths:
-                ep = p.replace("\\", "\\\\").replace("'", r"'\\''")
-                f.write(f"file '{ep}'\n")
-                f.write(f"duration {frame_duration:.8f}\n")
-            ep = image_paths[-1].replace("\\", "\\\\").replace("'", r"'\\''")
-            f.write(f"file '{ep}'\n")
+        staged_pattern = os.path.join(work_dir, "frame_%06d.png")
+        for frame_index, source_path in enumerate(image_paths, start=1):
+            if not os.path.exists(source_path):
+                raise RuntimeError(f"Image sequence frame is missing before encode: {source_path}")
+            staged_path = os.path.join(work_dir, f"frame_{frame_index:06d}.png")
+            try:
+                with Image.open(source_path) as image:
+                    image.convert("RGB").save(staged_path)
+            except Exception as exc:
+                raise RuntimeError(f"Could not read image sequence frame: {source_path} ({exc})") from exc
 
         overwrite_flag = "-y" if overwrite else "-n"
         cmd = [
             ffmpeg_path,
             overwrite_flag,
-            "-f",
-            "concat",
-            "-safe",
-            "0",
+            "-framerate",
+            str(max(float(fps), 1.0)),
             "-i",
-            list_path,
-            "-vsync",
-            "vfr",
+            staged_pattern,
             "-c:v",
             video_codec,
             "-preset",
